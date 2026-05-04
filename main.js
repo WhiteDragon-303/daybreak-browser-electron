@@ -4,7 +4,7 @@ const fs = require('fs');
 let windows = [];
 let proxyServer = '';
 
-function createWindow(workspaceData = null) {
+function createWindow() {
     const win = new BrowserWindow({
         width: 1280,
         height: 800,
@@ -48,7 +48,6 @@ ipcMain.on('open-external', (e, url) => { require('electron').shell.openExternal
 ipcMain.handle('export-bookmarks', async (e, bm) => { const r = await dialog.showSaveDialog(null, { defaultPath: 'bookmarks.json', filters: [{ name: 'JSON', extensions: ['json'] }] }); if (!r.canceled && r.filePath) { fs.writeFileSync(r.filePath, JSON.stringify(bm, null, 2)); return { success: true }; } return { success: false }; });
 ipcMain.handle('import-bookmarks', async () => { const r = await dialog.showOpenDialog(null, { filters: [{ name: 'JSON', extensions: ['json'] }], properties: ['openFile'] }); if (!r.canceled && r.filePaths.length > 0) { try { return { success: true, bookmarks: JSON.parse(fs.readFileSync(r.filePaths[0], 'utf-8')) }; } catch (err) { return { success: false, error: err.message }; } } return { success: false }; });
 ipcMain.handle('save-file', async (e, data, filename) => { const r = await dialog.showSaveDialog(null, { defaultPath: filename }); if (!r.canceled && r.filePath) { fs.writeFileSync(r.filePath, data); return { success: true, path: r.filePath }; } return { success: false }; });
-ipcMain.on('create-new-window', (event, tabData) => { const newWin = createWindow(); newWin.webContents.on('did-finish-load', () => { newWin.webContents.send('add-dragged-tab', tabData); }); });
 
 app.whenReady().then(() => { createWindow(); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
