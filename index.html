@@ -83,7 +83,8 @@
     <div class="ctx-menu" id="ctxMenu"></div>
 
 <script>
-const { ipcRenderer } = require('electron');
+const API = window.daybreakAPI;
+
 let tabs=[],activeId=null,hist={},histPos={},closedTabs=[],ctxTabId=null;
 let visits=JSON.parse(localStorage.getItem('visits')||'[]');
 let bookmarks=JSON.parse(localStorage.getItem('bookmarks')||'[]');
@@ -93,80 +94,143 @@ let isDark=localStorage.getItem('darkMode')==='true';
 let lang=localStorage.getItem('language')||'zh';
 if(isDark)document.body.classList.add('dark');
 
+function applyZoom(){document.body.style.zoom=zoom;}
+applyZoom();
+
 const engines={baidu:'https://www.baidu.com/s?wd=',google:'https://www.google.com/search?q=',bing:'https://www.bing.com/search?q=',sogou:'https://www.sogou.com/web?query=','360':'https://www.so.com/s?q='};
 const eNames={baidu:'百度',google:'Google',bing:'Bing',sogou:'搜狗','360':'360'};
 
 function toast(msg){let d=document.createElement('div');d.className='toast';d.textContent=msg;document.body.appendChild(d);setTimeout(function(){d.remove();},2500);}
 function fixUrl(u){if(u.startsWith('mttbrowser://')||u.startsWith('intent://')){let m=u.match(/url=([^&]+)/i);return m?decodeURIComponent(m[1]):'daybreak://home';}return u;}
 
-// ===== MAIN MENU =====
+async function savePassword(site, username, password) {
+    let encryptedPassword = await API.encryptPassword(password);
+    passwords[site] = {username: username, password: encryptedPassword};
+    localStorage.setItem('passwords', JSON.stringify(passwords));
+}
+
+async function getPassword(site) {
+    let entry = passwords[site];
+    if (!entry) return null;
+    let decryptedPassword = await API.decryptPassword(entry.password);
+    return {username: entry.username, password: decryptedPassword};
+}
+
+function showZoomModal(){
+    let modal=document.createElement('div');
+    modal.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.4);z-index:99999;display:flex;align-items:center;justify-content:center';
+    modal.innerHTML='<div style="background:var(--bar);border:1px solid var(--border);border-radius:12px;padding:20px;min-width:280px;box-shadow:0 8px 24px rgba(0,0,0,0.2)"><h3 style="color:var(--text);margin:0 0 16px;text-align:center;font-size:14px">'+(lang==='zh'?'缩放: ':'Zoom: ')+'<span id="zoomVal">'+Math.round(zoom*100)+'%</span></h3><div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:16px"><button id="zmMinus" style="width:36px;height:36px;background:var(--btn);color:var(--text);border:1px solid var(--border);border-radius:50%;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center">−</button><input id="zmInput" type="text" value="'+Math.round(zoom*100)+'%" style="width:75px;text-align:center;background:var(--btn);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:14px;outline:none"><button id="zmPlus" style="width:36px;height:36px;background:var(--btn);color:var(--text);border:1px solid var(--border);border-radius:50%;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center">+</button></div><div style="display:flex;justify-content:center;gap:8px"><button id="zmReset" style="padding:6px 12px;background:var(--btn);color:var(--text);border:none;border-radius:6px;cursor:pointer;font-size:11px">'+(lang==='zh'?'重置':'Reset')+'</button><button id="zmClose" style="padding:6px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px">'+(lang==='zh'?'确定':'OK')+'</button></div></div>';
+    document.body.appendChild(modal);
+    
+    function updateZoomDisplay(){
+        document.getElementById('zoomVal').textContent=Math.round(zoom*100)+'%';
+        document.getElementById('zmInput').value=Math.round(zoom*100)+'%';
+        document.body.style.zoom=zoom;
+    }
+    
+    function changeZoom(delta){
+        zoom=Math.max(0.25,Math.min(3,zoom+delta));
+        zoom=Math.round(zoom*100)/100;
+        localStorage.setItem('zoom',zoom);
+        updateZoomDisplay();
+        buildMenu();
+        let t2=tabs.find(function(t){return t.id===activeId;});
+        if(t2&&t2.isDawn&&t2.url==='daybreak://settings')renderSettings(t2.id);
+    }
+    
+    document.getElementById('zmMinus').onclick=function(){changeZoom(-0.1);};
+    document.getElementById('zmPlus').onclick=function(){changeZoom(0.1);};
+    document.getElementById('zmReset').onclick=function(){zoom=1;localStorage.setItem('zoom',zoom);updateZoomDisplay();buildMenu();};
+    document.getElementById('zmClose').onclick=function(){modal.remove();};
+    modal.onclick=function(e){if(e.target===modal)modal.remove();};
+    
+    document.getElementById('zmInput').onkeydown=function(e){
+        if(e.key==='Enter'){
+            let v=parseInt(document.getElementById('zmInput').value);
+            if(v){zoom=Math.max(0.25,Math.min(3,v/100));zoom=Math.round(zoom*100)/100;localStorage.setItem('zoom',zoom);updateZoomDisplay();buildMenu();modal.remove();}
+        }
+        if(e.key==='ArrowUp'){e.preventDefault();changeZoom(0.1);}
+        if(e.key==='ArrowDown'){e.preventDefault();changeZoom(-0.1);}
+    };
+    document.getElementById('zmInput').select();
+}
+
+// ===== MENU =====
 function buildMenu(){
     let m=document.getElementById('menuDropdown');m.innerHTML='';
-    [{t:'新建标签页',a:function(){newTab();}},{div:true},{t:'书签管理器',a:function(){openPage('daybreak://bookmarks');}},{t:'历史记录',a:function(){openPage('daybreak://history');}},{t:'密码管理器',a:function(){openPage('daybreak://passwords');}},{div:true},{t:'语言: '+(lang==='zh'?'中文':'English'),a:function(){switchLang();}},{t:'缩放: '+Math.round(zoom*100)+'%',a:function(){let z=prompt('缩放 (25-300):',Math.round(zoom*100));if(z){zoom=Math.max(25,Math.min(300,parseInt(z)||100))/100;localStorage.setItem('zoom',zoom);buildMenu();}}},{div:true},{t:'深色模式: '+(isDark?'开':'关'),a:function(){toggleTheme();}},{t:'更多设置',a:function(){openPage('daybreak://settings');}},{div:true},{t:'清除所有数据',a:function(){if(confirm('清除所有数据？')){localStorage.clear();location.reload();}}}].forEach(function(item){
+    [{t:lang==='zh'?'新建标签页':'New Tab',a:function(){newTab();}},{div:true},{t:lang==='zh'?'书签管理器':'Bookmarks',a:function(){openPage('daybreak://bookmarks');}},{t:lang==='zh'?'历史记录':'History',a:function(){openPage('daybreak://history');}},{t:lang==='zh'?'密码管理器':'Password Manager',a:function(){openPage('daybreak://passwords');}},{div:true},{t:(lang==='zh'?'语言: ':'Language: ')+(lang==='zh'?'中文':'English'),a:function(){switchLang();}},{t:(lang==='zh'?'缩放: ':'Zoom: ')+Math.round(zoom*100)+'%',a:function(){showZoomModal();}},{div:true},{t:(lang==='zh'?'深色模式: ':'Dark Mode: ')+(isDark?(lang==='zh'?'开':'On'):(lang==='zh'?'关':'Off')),a:function(){toggleTheme();}},{t:lang==='zh'?'更多设置':'Settings',a:function(){openPage('daybreak://settings');}},{div:true},{t:lang==='zh'?'清除所有数据':'Clear All Data',a:function(){if(confirm(lang==='zh'?'清除所有数据？':'Clear all data?')){localStorage.clear();location.reload();}}}].forEach(function(item){
         if(item.div){let d=document.createElement('div');d.className='menu-divider';m.appendChild(d);}
         else{let el=document.createElement('div');el.className='menu-item';el.textContent=item.t;el.onclick=function(){item.a();closeMenu();};m.appendChild(el);}
     });
 }
 function toggleMenu(){document.getElementById('menuDropdown').classList.toggle('show');}
 function closeMenu(){document.getElementById('menuDropdown').classList.remove('show');}
-function switchLang(){lang=lang==='zh'?'en':'zh';localStorage.setItem('language',lang);buildMenu();updateHomePage();}
+function switchLang(){
+    lang=lang==='zh'?'en':'zh';
+    localStorage.setItem('language',lang);
+    buildMenu();
+    // Refresh current page if it's an internal page
+    let t2=tabs.find(function(t){return t.id===activeId;});
+    if(t2&&t2.isDawn){
+        if(t2.url==='daybreak://home')renderHome(t2.id);
+        else if(t2.url==='daybreak://bookmarks')renderBookmarks(t2.id);
+        else if(t2.url==='daybreak://history')renderHistory(t2.id);
+        else if(t2.url==='daybreak://passwords')renderPasswords(t2.id);
+        else if(t2.url==='daybreak://settings')renderSettings(t2.id);
+    }
+    // Update URL placeholder
+    document.getElementById('urlInput').placeholder=lang==='zh'?'搜索或输入网址':'Search or enter URL';
+}
 function toggleTheme(){isDark=!isDark;document.body.classList.toggle('dark',isDark);localStorage.setItem('darkMode',isDark);buildMenu();}
 
 // ===== RIGHT CLICK MENU =====
-function showCtxMenu(x,y,tabId){
-    ctxTabId=tabId||null;
+function showCtxMenu(x,y,tabId,isPageMenu,pageData){
+    ctxTabId=tabId;
     let cm=document.getElementById('ctxMenu');cm.innerHTML='';
-    var items=[];
-    if(tabId){
-        items=[{t:'刷新',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t&&!t.isDawn)refreshTab(t);}},{t:'关闭标签页',a:function(){closeTab(ctxTabId);}},{t:'关闭其他标签页',a:function(){let keep=ctxTabId;[...tabs].filter(function(t2){return t2.id!==keep;}).forEach(function(t2){closeTab(t2.id);}if(activeId!==keep)setActive(keep);}},{t:'重新打开已关闭标签页',a:function(){if(closedTabs.length>0){let ct=closedTabs.pop();newTab(ct.url);}}},{t:'静音/取消静音标签页',a:function(){toast('静音已切换');}},{t:'收藏此标签页',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t&&!t.isDawn){bookmarks.push({name:t.title||t.url,url:t.url});localStorage.setItem('bookmarks',JSON.stringify(bookmarks));toast('书签已添加');}}},{t:'复制标签页',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t)newTab(t.url);}},{t:'在外部浏览器打开',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t&&!t.isDawn)ipcRenderer.send('open-external',t.url);}}];
-    }else{
-        items=[{t:'新建标签页',a:function(){newTab();}},{t:'重新打开已关闭标签页',a:function(){if(closedTabs.length>0){let ct=closedTabs.pop();newTab(ct.url);}}},{t:'书签管理器',a:function(){openPage('daybreak://bookmarks');}},{t:'更多设置',a:function(){openPage('daybreak://settings');}}];
+    
+    if (isPageMenu && pageData) {
+        if (pageData.linkUrl) {
+            [{t:lang==='zh'?'在新标签页打开链接':'Open Link in New Tab',a:function(){newTab(pageData.linkUrl);}},{t:lang==='zh'?'复制链接地址':'Copy Link Address',a:function(){navigator.clipboard.writeText(pageData.linkUrl);toast(lang==='zh'?'链接已复制':'Link copied');}},{div:true}].forEach(function(item){
+                if(item.div){let d=document.createElement('div');d.className='menu-divider';cm.appendChild(d);}
+                else{let el=document.createElement('div');el.className='ctx-item';el.textContent=item.t;el.onclick=function(){item.a();cm.classList.remove('show');};cm.appendChild(el);}
+            });
+        }
+        if (pageData.selectionText) {
+            [{t:lang==='zh'?'复制':'Copy',a:function(){navigator.clipboard.writeText(pageData.selectionText);toast(lang==='zh'?'已复制':'Copied');}},{t:lang==='zh'?'搜索选中文本':'Search Selected Text',a:function(){let e=document.getElementById('engineSelect').value;newTab(engines[e]+encodeURIComponent(pageData.selectionText));}},{div:true}].forEach(function(item){
+                if(item.div){let d=document.createElement('div');d.className='menu-divider';cm.appendChild(d);}
+                else{let el=document.createElement('div');el.className='ctx-item';el.textContent=item.t;el.onclick=function(){item.a();cm.classList.remove('show');};cm.appendChild(el);}
+            });
+        }
+        [{t:lang==='zh'?'返回':'Back',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t&&!t.isDawn)API.goBackView(t.id);}},{t:lang==='zh'?'前进':'Forward',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t&&!t.isDawn)API.goForwardView(t.id);}},{t:lang==='zh'?'刷新':'Refresh',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t&&!t.isDawn)API.reloadView(t.id);}}].forEach(function(item){
+            let el=document.createElement('div');el.className='ctx-item';el.textContent=item.t;el.onclick=function(){item.a();cm.classList.remove('show');};cm.appendChild(el);
+        });
+    } else {
+        [{t:lang==='zh'?'刷新':'Refresh',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t&&!t.isDawn)refreshTab(t);}},{t:lang==='zh'?'关闭标签页':'Close Tab',a:function(){closeTab(ctxTabId);}},{t:lang==='zh'?'关闭其他标签页':'Close Other Tabs',a:function(){let keep=ctxTabId;[...tabs].filter(function(t2){return t2.id!==keep;}).forEach(function(t2){closeTab(t2.id);});}},{t:lang==='zh'?'重新打开已关闭标签页':'Reopen Closed Tab',a:function(){if(closedTabs.length>0){let ct=closedTabs.pop();newTab(ct.url);}}},{t:lang==='zh'?'收藏此标签页':'Bookmark This Tab',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t&&!t.isDawn){bookmarks.push({name:t.title||t.url,url:t.url});localStorage.setItem('bookmarks',JSON.stringify(bookmarks));toast(lang==='zh'?'书签已添加':'Bookmark added');}}},{t:lang==='zh'?'复制标签页':'Duplicate Tab',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t)newTab(t.url);}},{t:lang==='zh'?'在外部浏览器打开':'Open in External Browser',a:function(){let t=tabs.find(function(t2){return t2.id===ctxTabId;});if(t&&!t.isDawn)API.openExternal(t.url);}}].forEach(function(item){
+            let el=document.createElement('div');el.className='ctx-item';el.textContent=item.t;el.onclick=function(){item.a();cm.classList.remove('show');};cm.appendChild(el);
+        });
     }
-    items.forEach(function(item){let el=document.createElement('div');el.className='ctx-item';el.textContent=item.t;el.onclick=function(){item.a();cm.classList.remove('show');};cm.appendChild(el);});
-    cm.style.left=Math.min(x,window.innerWidth-210)+'px';cm.style.top=Math.min(y,window.innerHeight-300)+'px';cm.classList.add('show');
+    
+    cm.style.left=x+'px';cm.style.top=y+'px';cm.classList.add('show');
 }
 function closeCtxMenu(){document.getElementById('ctxMenu').classList.remove('show');}
-
-// ===== GLOBAL RIGHT-CLICK HANDLER =====
-document.addEventListener('contextmenu',function(e){
-    // Check if clicking on a tab
-    var tabEl=e.target.closest('.tab');
-    if(tabEl){
-        e.preventDefault();
-        var tabId=tabEl.dataset.id||(tabs.find(function(t,i){return tabEl.querySelector('span')?.textContent===t.title;})||{}).id;
-        if(!tabId){var idx=parseInt(tabEl.dataset.index);if(!isNaN(idx)&&tabs[idx])tabId=tabs[idx].id;}
-        if(tabId)showCtxMenu(e.clientX,e.clientY,tabId);
-        return;
-    }
-    // Check if clicking on the container (not on UI)
-    if(e.target.closest('#mainContainer')||e.target.closest('.container')){
-        e.preventDefault();
-        showCtxMenu(e.clientX,e.clientY,null);
-    }
-});
-
-// Hide context menu on click elsewhere
-document.addEventListener('click',function(e){
-    if(!e.target.closest('.ctx-menu'))closeCtxMenu();
-    if(!e.target.closest('.right-btns')&&!e.target.closest('.menu'))closeMenu();
-});
+document.addEventListener('click',function(e){if(!e.target.closest('.ctx-menu'))closeCtxMenu();});
 
 // ===== TABS =====
 async function newTab(url){
     url=fixUrl(url||'daybreak://home');
     if(url.startsWith('daybreak://')){openPage(url);return;}
     let id='t'+Date.now(),fullUrl=/^https?:\/\//.test(url)?url:'https://'+url;
-    await ipcRenderer.invoke('create-view',fullUrl,id);
+    await API.createView(fullUrl,id);
     tabs.push({id,url:fullUrl,title:fullUrl.replace(/^https?:\/\//,'').substring(0,20),isDawn:false});
-    hist[id]=[fullUrl];histPos[id]=0;renderTabs();setActive(id);document.getElementById('statusBar').classList.add('loading');
+    hist[id]=[{url:fullUrl}];histPos[id]=0;renderTabs();setActive(id);document.getElementById('statusBar').classList.add('loading');
 }
 
 function openPage(url){
     url=fixUrl(url);let exist=tabs.find(function(t){return t.url===url;});if(exist){setActive(exist.id);return;}
     let id='t'+Date.now(),type=url.split('://')[1]||'home',div=document.createElement('div');div.className='page';div.id='pg_'+id;
     document.getElementById('mainContainer').appendChild(div);
-    tabs.push({id,url,title:type==='home'?'新标签页':type,div:div,isDawn:true});
-    hist[id]=[url];histPos[id]=0;renderTabs();setActive(id);
+    tabs.push({id,url,title:type==='home'?(lang==='zh'?'新标签页':'New Tab'):type,div:div,isDawn:true});
+    hist[id]=[{url:url}];histPos[id]=0;renderTabs();setActive(id);
     if(type==='home')renderHome(id);else if(type==='bookmarks')renderBookmarks(id);
     else if(type==='history')renderHistory(id);else if(type==='passwords')renderPasswords(id);
     else if(type==='settings')renderSettings(id);
@@ -174,11 +238,12 @@ function openPage(url){
 
 function renderTabs(){
     let bar=document.getElementById('tabsBar');bar.innerHTML='';
-    tabs.forEach(function(t,i){
-        let e=document.createElement('div');e.className='tab'+(t.id===activeId?' active':'');e.dataset.index=i;e.dataset.id=t.id;
-        e.innerHTML='<span>'+(t.title||'新标签页')+'</span><button class="close">&times;</button>';
+    tabs.forEach(function(t){
+        let e=document.createElement('div');e.className='tab'+(t.id===activeId?' active':'');
+        e.innerHTML='<span>'+(t.title||(lang==='zh'?'新标签页':'New Tab'))+'</span><button class="close">&times;</button>';
         e.querySelector('.close').onclick=function(ev){ev.stopPropagation();closeTab(t.id);};
         e.onclick=function(){setActive(t.id);};
+        e.addEventListener('contextmenu',function(ev){ev.preventDefault();showCtxMenu(ev.clientX,ev.clientY,t.id);});
         bar.appendChild(e);
     });
     let nb=document.createElement('button');nb.className='newtab-btn';nb.textContent='+';nb.onclick=function(){newTab();};bar.appendChild(nb);
@@ -187,14 +252,18 @@ function renderTabs(){
 async function setActive(id){
     if(activeId){let o=tabs.find(function(t){return t.id===activeId;});if(o&&o.div)o.div.classList.remove('active');}
     activeId=id;let t=tabs.find(function(t){return t.id===id;});
-    if(t){if(t.isDawn){await ipcRenderer.invoke('hide-all-views');t.div.classList.add('active');document.getElementById('urlInput').value=t.url;}else{document.getElementById('urlInput').value=t.url;await ipcRenderer.invoke('set-active-view',t.id);}}
-    updateButtons();renderTabs();
+    if(t){
+        if(t.isDawn){await API.hideAllViews();t.div.classList.add('active');document.getElementById('urlInput').value=t.url;}
+        else{document.getElementById('urlInput').value=t.url;await API.setActiveView(t.id);}
+    }
+    updateButtons();
+    renderTabs();
 }
 
 async function closeTab(id){
     let idx=tabs.findIndex(function(t){return t.id===id;});if(idx===-1)return;
     let t=tabs[idx];closedTabs.push({url:t.url,title:t.title});if(closedTabs.length>20)closedTabs.shift();
-    if(!t.isDawn)await ipcRenderer.invoke('remove-view',t.id);
+    if(!t.isDawn)await API.removeView(t.id);
     if(t.div)try{t.div.remove();}catch(e){}tabs.splice(idx,1);delete hist[id];delete histPos[id];
     if(tabs.length===0){setTimeout(function(){newTab();},10);return;}
     if(activeId===id)setActive(tabs[Math.max(0,idx-1)].id);else renderTabs();
@@ -206,116 +275,130 @@ async function navigate(url){
     let e=document.getElementById('engineSelect').value;
     if(!/^https?:\/\//.test(url)&&!url.includes('.'))url=engines[e]+encodeURIComponent(url);
     else if(!/^https?:\/\//.test(url))url='https://'+url;
-    let t=tabs.find(function(t2){return t2.id===activeId;});if(!t)return;
+    let t=tabs.find(function(t){return t.id===activeId;});if(!t)return;
     if(t.isDawn)newTab(url);
     else{
-        let h=hist[activeId]||[];let p=histPos[activeId]!==undefined?histPos[activeId]:h.length-1;
-        h=h.slice(0,p+1);h.push(url);histPos[activeId]=h.length-1;hist[activeId]=h;
-        t.url=url;await ipcRenderer.invoke('navigate-view',t.id,url);
+        let h=hist[activeId]||[];
+        if(histPos[activeId]===undefined)histPos[activeId]=h.length-1;
+        h=h.slice(0,histPos[activeId]+1);
+        h.push({url:url});histPos[activeId]=h.length-1;
+        hist[activeId]=h;
+        t.url=url;await API.navigateView(t.id,url);
         document.getElementById('urlInput').value=url;document.getElementById('statusBar').classList.add('loading');
         visits.unshift({url:url,title:url.replace(/^https?:\/\//,''),time:new Date().toLocaleString()});localStorage.setItem('visits',JSON.stringify(visits));
         updateButtons();
     }
 }
 
-function goBack(){
-    let h=hist[activeId]||[],p=histPos[activeId]!==undefined?histPos[activeId]:h.length-1;
-    if(p>0){p--;histPos[activeId]=p;let t=tabs.find(function(t2){return t2.id===activeId;});if(t&&!t.isDawn){var backUrl=h[p];if(typeof backUrl==='string'){t.url=backUrl;ipcRenderer.invoke('navigate-view',t.id,backUrl);document.getElementById('urlInput').value=backUrl;}}}
+async function goBack(){
+    let h=hist[activeId]||[],p=histPos[activeId]||0;
+    if(p>0){p--;histPos[activeId]=p;let t=tabs.find(function(t2){return t2.id===activeId;});if(t&&!t.isDawn){t.url=h[p].url;API.navigateView(t.id,h[p].url);document.getElementById('urlInput').value=h[p].url;}}
     updateButtons();
 }
 
-function goForward(){
-    let h=hist[activeId]||[],p=histPos[activeId]!==undefined?histPos[activeId]:h.length-1;
-    if(p<h.length-1){p++;histPos[activeId]=p;let t=tabs.find(function(t2){return t2.id===activeId;});if(t&&!t.isDawn){var fwdUrl=h[p];if(typeof fwdUrl==='string'){t.url=fwdUrl;ipcRenderer.invoke('navigate-view',t.id,fwdUrl);document.getElementById('urlInput').value=fwdUrl;}}}
+async function goForward(){
+    let h=hist[activeId]||[],p=histPos[activeId]||0;
+    if(p<h.length-1){p++;histPos[activeId]=p;let t=tabs.find(function(t2){return t2.id===activeId;});if(t&&!t.isDawn){t.url=h[p].url;API.navigateView(t.id,h[p].url);document.getElementById('urlInput').value=h[p].url;}}
     updateButtons();
 }
 
 function refresh(){
     let t=tabs.find(function(t2){return t2.id===activeId;});
-    if(t&&!t.isDawn){ipcRenderer.invoke('navigate-view',t.id,t.url);document.getElementById('statusBar').classList.add('loading');}
+    if(t&&!t.isDawn){API.reloadView(t.id);document.getElementById('statusBar').classList.add('loading');}
 }
 
-function refreshTab(t){if(t&&!t.isDawn){ipcRenderer.invoke('navigate-view',t.id,t.url);document.getElementById('statusBar').classList.add('loading');}}
+function refreshTab(t){
+    if(t&&!t.isDawn){API.reloadView(t.id);document.getElementById('statusBar').classList.add('loading');}
+}
 
 function updateButtons(){
-    let h=hist[activeId]||[],p=histPos[activeId]!==undefined?histPos[activeId]:h.length-1;
+    let h=hist[activeId]||[],p=histPos[activeId]||0;
     document.getElementById('backBtn').disabled=p<=0;
     document.getElementById('forwardBtn').disabled=p>=h.length-1;
 }
 
-// ===== HOME =====
 function renderHome(id){
     let div=document.getElementById('pg_'+id);if(!div)return;
-    let e=document.getElementById('engineSelect').value,ph='在 '+eNames[e]+' 上搜索';
-    div.innerHTML='<div class="home-content"><div class="home-title">破晓浏览器</div><div class="home-credit">By WhiteDragon-303 | v1.0.0</div><div class="search-row"><input id="hs_'+id+'" placeholder="'+ph+'"><button id="hsbtn_'+id+'">搜索</button></div><div class="weather-row"><div><span class="weather-temp" id="temp_'+id+'">--&#176;</span></div><div class="weather-time" id="time_'+id+'"></div></div></div>';
+    let e=document.getElementById('engineSelect').value,ph=(lang==='zh'?'在 ':'Search on ')+eNames[e]+(lang==='zh'?' 上搜索':'');
+    div.innerHTML='<div class="home-content"><div class="home-title">'+(lang==='zh'?'破晓浏览器':'Daybreak Browser')+'</div><div class="home-credit">By WhiteDragon-303 | v1.0.0</div><div class="search-row"><input id="hs_'+id+'" placeholder="'+ph+'"><button id="hsbtn_'+id+'">'+(lang==='zh'?'搜索':'Search')+'</button></div><div class="weather-row"><div><span class="weather-temp" id="temp_'+id+'">--&#176;</span></div><div class="weather-time" id="time_'+id+'"></div></div></div>';
     document.getElementById('hs_'+id).onkeydown=function(ev){if(ev.key==='Enter')navigate(ev.target.value);};
     document.getElementById('hsbtn_'+id).onclick=function(){navigate(document.getElementById('hs_'+id).value);};
     updateTime(id);updateWeather(id);
 }
 function updateHomePage(){let t=tabs.find(function(t2){return t2.id===activeId;});if(t&&t.isDawn&&t.url==='daybreak://home')renderHome(t.id);}
 
-// ===== BOOKMARKS =====
 function renderBookmarks(id){
     let div=document.getElementById('pg_'+id);if(!div)return;
-    let h='<div style="max-width:600px;margin:0 auto"><h2 style="color:var(--text);margin-bottom:12px">书签管理器</h2><button class="btn" id="addBm_'+id+'">添加当前页</button>';
-    if(bookmarks.length===0)h+='<div class="list-item">暂无书签</div>';
-    else bookmarks.forEach(function(b,i){h+='<div class="list-item"><span style="cursor:pointer;flex:1">'+b.name+'</span><button class="btn-red" data-idx="'+i+'">删除</button></div>';});
+    let h='<div style="max-width:600px;margin:0 auto"><h2 style="color:var(--text);margin-bottom:12px">'+(lang==='zh'?'书签管理器':'Bookmarks')+'</h2><button class="btn" id="addBm_'+id+'">'+(lang==='zh'?'添加当前页':'Add Current Page')+'</button>';
+    if(bookmarks.length===0)h+='<div class="list-item">'+(lang==='zh'?'暂无书签':'No bookmarks')+'</div>';
+    else bookmarks.forEach(function(b,i){h+='<div class="list-item"><span style="cursor:pointer;flex:1">'+b.name+'</span><button class="btn-red" data-idx="'+i+'">'+(lang==='zh'?'删除':'Delete')+'</button></div>';});
     h+='</div>';div.innerHTML=h;
     div.querySelectorAll('.list-item span').forEach(function(el){el.onclick=function(){let i=parseInt(el.parentNode.querySelector('button').dataset.idx);if(bookmarks[i])navigate(bookmarks[i].url);};});
     div.querySelectorAll('.btn-red').forEach(function(btn){btn.onclick=function(ev){ev.stopPropagation();let i=parseInt(btn.dataset.idx);bookmarks.splice(i,1);localStorage.setItem('bookmarks',JSON.stringify(bookmarks));renderBookmarks(id);};});
-    let ab=document.getElementById('addBm_'+id);if(ab)ab.onclick=function(){let t=tabs.find(function(t2){return t2.id===activeId;});if(t&&!t.isDawn){let n=prompt('名称:',t.title);if(n){bookmarks.push({name:n,url:t.url});localStorage.setItem('bookmarks',JSON.stringify(bookmarks));renderBookmarks(id);toast('书签已添加');}}};
+    let ab=document.getElementById('addBm_'+id);if(ab)ab.onclick=function(){let t=tabs.find(function(t2){return t2.id===activeId;});if(t&&!t.isDawn){let n=prompt(lang==='zh'?'名称:':'Name:',t.title);if(n){bookmarks.push({name:n,url:t.url});localStorage.setItem('bookmarks',JSON.stringify(bookmarks));renderBookmarks(id);toast(lang==='zh'?'书签已添加':'Bookmark added');}}};
 }
 
-// ===== HISTORY =====
 function renderHistory(id){
     let div=document.getElementById('pg_'+id);if(!div)return;
-    let h='<div style="max-width:600px;margin:0 auto"><h2 style="color:var(--text);margin-bottom:12px">历史记录</h2><button class="btn-red" id="clrHist_'+id+'">清除历史</button>';
-    if(visits.length===0)h+='<div class="list-item">暂无历史</div>';
+    let h='<div style="max-width:600px;margin:0 auto"><h2 style="color:var(--text);margin-bottom:12px">'+(lang==='zh'?'历史记录':'History')+'</h2><button class="btn-red" id="clrHist_'+id+'">'+(lang==='zh'?'清除历史':'Clear History')+'</button>';
+    if(visits.length===0)h+='<div class="list-item">'+(lang==='zh'?'暂无历史':'No history')+'</div>';
     else visits.forEach(function(v){h+='<div class="list-item" data-url="'+v.url+'"><span>'+v.title+'<small style="display:block;opacity:0.5;font-size:10px">'+v.time+'</small></span></div>';});
     h+='</div>';div.innerHTML=h;
     div.querySelectorAll('.list-item[data-url]').forEach(function(el){el.onclick=function(){navigate(el.dataset.url);};});
-    let cb=document.getElementById('clrHist_'+id);if(cb)cb.onclick=function(){if(confirm('清除所有历史？')){visits=[];localStorage.setItem('visits','[]');renderHistory(id);toast('历史已清除');}};
+    let cb=document.getElementById('clrHist_'+id);if(cb)cb.onclick=function(){if(confirm(lang==='zh'?'清除所有历史？':'Clear all history?')){visits=[];localStorage.setItem('visits','[]');renderHistory(id);toast(lang==='zh'?'历史已清除':'History cleared');}};
 }
 
-// ===== PASSWORDS =====
-function renderPasswords(id){
+async function renderPasswords(id){
     let div=document.getElementById('pg_'+id);if(!div)return;
-    let ents=Object.entries(passwords),h='<div style="max-width:600px;margin:0 auto"><h2 style="color:var(--text);margin-bottom:12px">密码管理器</h2>';
-    h+='<input id="ps_'+id+'" placeholder="网站" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bar);color:var(--text);border:1px solid var(--border);border-radius:6px"><input id="pu_'+id+'" placeholder="用户名" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bar);color:var(--text);border:1px solid var(--border);border-radius:6px"><input type="password" id="pp_'+id+'" placeholder="密码" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bar);color:var(--text);border:1px solid var(--border);border-radius:6px"><button class="btn" id="psv_'+id+'">保存</button>';
-    if(ents.length===0)h+='<div class="list-item">暂无密码</div>';
-    else ents.forEach(function(e){h+='<div class="list-item"><span>'+e[0]+' - '+e[1].username+'</span><div><button class="btn" data-site="'+e[0]+'">填充</button><button class="btn" data-pass="'+e[1].password+'">复制</button><button class="btn-red" data-site="'+e[0]+'" data-del="1">删除</button></div></div>';});
+    let ents=Object.entries(passwords),h='<div style="max-width:600px;margin:0 auto"><h2 style="color:var(--text);margin-bottom:12px">'+(lang==='zh'?'密码管理器':'Password Manager')+'</h2>';
+    h+='<input id="ps_'+id+'" placeholder="'+(lang==='zh'?'网站':'Website')+'" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bar);color:var(--text);border:1px solid var(--border);border-radius:6px"><input id="pu_'+id+'" placeholder="'+(lang==='zh'?'用户名':'Username')+'" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bar);color:var(--text);border:1px solid var(--border);border-radius:6px"><input type="password" id="pp_'+id+'" placeholder="'+(lang==='zh'?'密码':'Password')+'" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bar);color:var(--text);border:1px solid var(--border);border-radius:6px"><button class="btn" id="psv_'+id+'">'+(lang==='zh'?'保存':'Save')+'</button>';
+    if(ents.length===0)h+='<div class="list-item">'+(lang==='zh'?'暂无密码':'No passwords')+'</div>';
+    else ents.forEach(function(e){h+='<div class="list-item"><span>'+e[0]+' - '+e[1].username+'</span><div><button class="btn" data-site="'+e[0]+'">'+(lang==='zh'?'填充':'Fill')+'</button><button class="btn" data-pass="'+e[1].password+'">'+(lang==='zh'?'复制':'Copy')+'</button><button class="btn-red" data-site="'+e[0]+'" data-del="1">'+(lang==='zh'?'删除':'Delete')+'</button></div></div>';});
     h+='</div>';div.innerHTML=h;
-    let sv=document.getElementById('psv_'+id);if(sv)sv.onclick=function(){let s=document.getElementById('ps_'+id).value.trim(),u=document.getElementById('pu_'+id).value.trim(),p=document.getElementById('pp_'+id).value;if(s&&u&&p){passwords[s]={username:u,password:btoa(p)};localStorage.setItem('passwords',JSON.stringify(passwords));renderPasswords(id);toast('密码已保存');}};
-    div.querySelectorAll('.btn[data-site]:not([data-del])').forEach(function(b){b.onclick=function(){toast('填充: '+b.dataset.site);};});
-    div.querySelectorAll('.btn[data-pass]').forEach(function(b){b.onclick=function(){navigator.clipboard.writeText(atob(b.dataset.pass));toast('密码已复制');};});
-    div.querySelectorAll('.btn-red[data-del]').forEach(function(b){b.onclick=function(){delete passwords[b.dataset.site];localStorage.setItem('passwords',JSON.stringify(passwords));renderPasswords(id);toast('密码已删除');};});
+    let sv=document.getElementById('psv_'+id);if(sv)sv.onclick=async function(){let s=document.getElementById('ps_'+id).value.trim(),u=document.getElementById('pu_'+id).value.trim(),p=document.getElementById('pp_'+id).value;if(s&&u&&p){await savePassword(s,u,p);renderPasswords(id);toast(lang==='zh'?'密码已保存':'Password saved');}};
+    div.querySelectorAll('.btn[data-site]:not([data-del])').forEach(function(b){b.onclick=function(){toast((lang==='zh'?'填充: ':'Fill: ')+b.dataset.site);};});
+    div.querySelectorAll('.btn[data-pass]').forEach(function(b){b.onclick=async function(){let site=b.closest('.list-item').querySelector('span').textContent.split(' - ')[0];let decrypted=await getPassword(site);if(decrypted){navigator.clipboard.writeText(decrypted.password);toast(lang==='zh'?'密码已复制':'Password copied');}};});
+    div.querySelectorAll('.btn-red[data-del]').forEach(function(b){b.onclick=function(){delete passwords[b.dataset.site];localStorage.setItem('passwords',JSON.stringify(passwords));renderPasswords(id);toast(lang==='zh'?'密码已删除':'Password deleted');};});
 }
 
-// ===== SETTINGS =====
 function renderSettings(id){
     let div=document.getElementById('pg_'+id);if(!div)return;
-    div.innerHTML='<div style="max-width:600px;margin:0 auto"><h2 style="color:var(--text);margin-bottom:12px">更多设置</h2><div class="settings-item" id="setTheme_'+id+'">深色模式<span>'+(isDark?'开启':'关闭')+'</span></div><div class="settings-item" id="setLang_'+id+'">语言<span>'+(lang==='zh'?'中文':'English')+'</span></div><div class="settings-item" id="setZoom_'+id+'">缩放<span>'+Math.round(zoom*100)+'%</span></div><div class="settings-item" id="setClearHist_'+id+'">清除历史记录</div><div class="settings-item" id="setClearData_'+id+'">清除所有数据</div><div class="settings-item" id="setAbout_'+id+'">关于</div><div id="aboutArea_'+id+'"></div></div>';
+    div.innerHTML='<div style="max-width:600px;margin:0 auto"><h2 style="color:var(--text);margin-bottom:12px">'+(lang==='zh'?'更多设置':'Settings')+'</h2><div class="settings-item" id="setTheme_'+id+'">'+(lang==='zh'?'深色模式':'Dark Mode')+'<span>'+(isDark?(lang==='zh'?'开启':'On'):(lang==='zh'?'关闭':'Off'))+'</span></div><div class="settings-item" id="setLang_'+id+'">'+(lang==='zh'?'语言':'Language')+'<span>'+(lang==='zh'?'中文':'English')+'</span></div><div class="settings-item" id="setZoom_'+id+'">'+(lang==='zh'?'缩放':'Zoom')+'<span>'+Math.round(zoom*100)+'%</span></div><div class="settings-item" id="setClearHist_'+id+'">'+(lang==='zh'?'清除历史记录':'Clear History')+'</div><div class="settings-item" id="setClearData_'+id+'">'+(lang==='zh'?'清除所有数据':'Clear All Data')+'</div><div class="settings-item" id="setAbout_'+id+'">'+(lang==='zh'?'关于':'About')+'</div><div id="aboutArea_'+id+'"></div></div>';
     document.getElementById('setTheme_'+id).onclick=function(){isDark=!isDark;document.body.classList.toggle('dark',isDark);localStorage.setItem('darkMode',isDark);renderSettings(id);buildMenu();};
-    document.getElementById('setLang_'+id).onclick=function(){lang=lang==='zh'?'en':'zh';localStorage.setItem('language',lang);renderSettings(id);buildMenu();updateHomePage();};
-    document.getElementById('setZoom_'+id).onclick=function(){let z=prompt('缩放 (25-300):',Math.round(zoom*100));if(z){zoom=Math.max(25,Math.min(300,parseInt(z)||100))/100;localStorage.setItem('zoom',zoom);renderSettings(id);buildMenu();}};
-    document.getElementById('setClearHist_'+id).onclick=function(){if(confirm('清除所有历史记录？')){visits=[];localStorage.setItem('visits','[]');toast('历史已清除');}};
-    document.getElementById('setClearData_'+id).onclick=function(){if(confirm('清除所有数据？')){localStorage.clear();location.reload();}};
-    document.getElementById('setAbout_'+id).onclick=function(){document.getElementById('aboutArea_'+id).innerHTML='<div class="about-section"><h3>破晓浏览器</h3><p>版本: 1.0.0</p><p>作者: WhiteDragon-303</p></div>';};
+    document.getElementById('setLang_'+id).onclick=function(){switchLang();};
+    document.getElementById('setZoom_'+id).onclick=function(){showZoomModal();};
+    document.getElementById('setClearHist_'+id).onclick=function(){if(confirm(lang==='zh'?'清除所有历史记录？':'Clear all history?')){visits=[];localStorage.setItem('visits','[]');toast(lang==='zh'?'历史已清除':'History cleared');}};
+    document.getElementById('setClearData_'+id).onclick=function(){if(confirm(lang==='zh'?'清除所有数据？':'Clear all data?')){localStorage.clear();location.reload();}};
+    document.getElementById('setAbout_'+id).onclick=function(){document.getElementById('aboutArea_'+id).innerHTML='<div class="about-section"><h3>'+(lang==='zh'?'破晓浏览器':'Daybreak Browser')+'</h3><p>'+(lang==='zh'?'版本: 1.0.0':'Version: 1.0.0')+'</p><p>'+(lang==='zh'?'作者: WhiteDragon-303':'Author: WhiteDragon-303')+'</p></div>';};
 }
 
-function updateTime(id){let e=document.getElementById('time_'+id);if(e)e.textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false});}
+function updateTime(id){let e=document.getElementById('time_'+id);if(e)e.textContent=new Date().toLocaleTimeString(lang==='zh'?'zh-CN':'en-US',{hour12:false});}
 function updateWeather(id){let t=document.getElementById('temp_'+id);if(!t)return;fetch('https://api.open-meteo.com/v1/forecast?latitude=35&longitude=105&current_weather=true').then(function(r){return r.json();}).then(function(dt){t.textContent=dt.current_weather.temperature+'°C';}).catch(function(){t.textContent='22°C';});}
 
-ipcRenderer.on('page-loaded',function(e,data){document.getElementById('statusBar').classList.remove('loading');let t=tabs.find(function(t2){return t2.id===data.id;});if(t){t.url=data.url;t.title=data.url.replace(/^https?:\/\//,'').substring(0,20);if(activeId===data.id)document.getElementById('urlInput').value=data.url;renderTabs();}});
-ipcRenderer.on('page-navigated',function(e,data){let t=tabs.find(function(t2){return t2.id===data.id;});if(t){t.url=data.url;t.title=data.url.replace(/^https?:\/\//,'').substring(0,20);if(activeId===data.id)document.getElementById('urlInput').value=data.url;renderTabs();}});
-ipcRenderer.on('open-new-tab',function(e,url){newTab(url);});
+API.onPageLoaded(function(data){document.getElementById('statusBar').classList.remove('loading');let t=tabs.find(function(t2){return t2.id===data.id;});if(t){t.url=data.url;t.title=data.title||data.url.replace(/^https?:\/\//,'').substring(0,20);if(activeId===data.id)document.getElementById('urlInput').value=data.url;renderTabs();}});
+
+API.onPageNavigated(function(data){let t=tabs.find(function(t2){return t2.id===data.id;});if(t){t.url=data.url;t.title=data.title||data.url.replace(/^https?:\/\//,'').substring(0,20);if(activeId===data.id)document.getElementById('urlInput').value=data.url;renderTabs();let h=hist[activeId]||[];let p=histPos[activeId]||0;if(!h[p]||h[p].url!==data.url){h.push({url:data.url});histPos[activeId]=h.length-1;hist[activeId]=h;updateButtons();}}});
+
+API.onOpenNewTab(function(url){newTab(url);});
+
+API.onShowPageContextMenu(function(data){showCtxMenu(data.x,data.y,activeId,true,data);});
 
 document.getElementById('backBtn').onclick=goBack;document.getElementById('forwardBtn').onclick=goForward;
 document.getElementById('refreshBtn').onclick=refresh;document.getElementById('homeBtn').onclick=function(){newTab('daybreak://home');};
 document.getElementById('urlInput').onkeydown=function(e){if(e.key==='Enter')navigate(e.target.value);};
 document.getElementById('engineSelect').onchange=function(){updateHomePage();};
 document.getElementById('menuBtn').onclick=function(e){e.stopPropagation();toggleMenu();};
-document.addEventListener('keydown',function(e){if(e.ctrlKey&&e.key==='t'){e.preventDefault();newTab();}if(e.ctrlKey&&e.shiftKey&&e.key==='T'){e.preventDefault();if(closedTabs.length>0){let ct=closedTabs.pop();newTab(ct.url);}}});
+document.addEventListener('click',function(e){if(!e.target.closest('.right-btns')&&!e.target.closest('.menu')&&!e.target.closest('.ctx-menu')){closeMenu();closeCtxMenu();}});
+document.addEventListener('keydown',function(e){
+    if(e.ctrlKey&&e.key==='t'){e.preventDefault();newTab();}
+    if(e.ctrlKey&&e.shiftKey&&e.key==='T'){e.preventDefault();if(closedTabs.length>0){let ct=closedTabs.pop();newTab(ct.url);}}
+    if(e.ctrlKey&&e.key==='w'){e.preventDefault();if(activeId)closeTab(activeId);}
+    if(e.ctrlKey&&e.key==='l'){e.preventDefault();document.getElementById('urlInput').focus();document.getElementById('urlInput').select();}
+    if(e.key==='F5'||(e.ctrlKey&&e.key==='r')){e.preventDefault();refresh();}
+    if(e.ctrlKey&&e.key==='+'){e.preventDefault();zoom=Math.min(3,zoom+0.1);zoom=Math.round(zoom*100)/100;localStorage.setItem('zoom',zoom);applyZoom();buildMenu();}
+    if(e.ctrlKey&&e.key==='-'){e.preventDefault();zoom=Math.max(0.25,zoom-0.1);zoom=Math.round(zoom*100)/100;localStorage.setItem('zoom',zoom);applyZoom();buildMenu();}
+    if(e.ctrlKey&&e.key==='0'){e.preventDefault();zoom=1;localStorage.setItem('zoom',zoom);applyZoom();buildMenu();}
+});
 
 buildMenu();newTab('daybreak://home');
 setInterval(function(){let t=tabs.find(function(t2){return t2.id===activeId;});if(t&&t.isDawn&&t.url==='daybreak://home'){updateTime(t.id);updateWeather(t.id);}},1000);

@@ -1,17 +1,54 @@
-const { app, BrowserWindow, BrowserView, session, ipcMain, dialog } = require('electron');
-const fs = require('fs');
+const { app, BrowserWindow, BrowserView, session, ipcMain, shell } = require('electron');
+const path = require('path');
+const crypto = require('crypto');
 
 let mainWindow;
 let views = {};
 let activeViewId = null;
+
+// Generate encryption key
+const ENCRYPTION_KEY = crypto.scryptSync('daybreak-browser-secure-key', 'salt', 32);
+const ALGORITHM = 'aes-256-gcm';
+
+function encrypt(text) {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag();
+    return JSON.stringify({
+        iv: iv.toString('hex'),
+        encrypted: encrypted,
+        tag: authTag.toString('hex')
+    });
+}
+
+function decrypt(encryptedData) {
+    try {
+        const data = JSON.parse(encryptedData);
+        const decipher = crypto.createDecipheriv(
+            ALGORITHM,
+            ENCRYPTION_KEY,
+            Buffer.from(data.iv, 'hex')
+        );
+        decipher.setAuthTag(Buffer.from(data.tag, 'hex'));
+        let decrypted = decipher.update(data.encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (error) {
+        return null;
+    }
+}
 
 function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1280,
         height: 800,
         webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, 'preload.js'),
+            sandbox: false
         }
     });
     
@@ -25,17 +62,6 @@ function createWindow() {
         if (activeViewId && views[activeViewId]) updateViewBounds(activeViewId);
     });
 
-    ses.on('will-download', (event, item) => {
-        event.preventDefault();
-        const fp = dialog.showSaveDialogSync(mainWindow, { defaultPath: item.getFilename() });
-        if (fp) {
-            item.setSavePath(fp);
-            item.on('done', (e, state) => {
-                if (state === 'completed') mainWindow.webContents.send('download-complete', { name: item.getFilename() });
-            });
-        }
-    });
-
     mainWindow.on('closed', () => { mainWindow = null; });
 }
 
@@ -44,6 +70,7 @@ function createView(url, id) {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
+            sandbox: true,
             webSecurity: false
         }
     });
@@ -52,7 +79,6 @@ function createView(url, id) {
     view.webContents.loadURL(url);
     views[id] = view;
     
-    // Prevent new windows from opening - open in new tab instead
     view.webContents.setWindowOpenHandler(({ url: newUrl }) => {
         mainWindow.webContents.send('open-new-tab', newUrl);
         return { action: 'deny' };
@@ -60,11 +86,32 @@ function createView(url, id) {
     
     view.webContents.on('did-finish-load', () => {
         if (activeViewId === id) updateViewBounds(id);
-        mainWindow.webContents.send('page-loaded', { id, url: view.webContents.getURL() });
+        mainWindow.webContents.send('page-loaded', { 
+            id, 
+            url: view.webContents.getURL(),
+            title: view.webContents.getTitle()
+        });
     });
     
     view.webContents.on('did-navigate', (event, url) => {
-        mainWindow.webContents.send('page-navigated', { id, url });
+        mainWindow.webContents.send('page-navigated', { 
+            id, 
+            url,
+            title: view.webContents.getTitle()
+        });
+    });
+    
+    // Right-click context menu for page content
+    view.webContents.on('context-menu', (event, params) => {
+        mainWindow.webContents.send('show-page-context-menu', {
+            x: params.x,
+            y: params.y,
+            linkUrl: params.linkURL,
+            pageUrl: params.pageURL,
+            selectionText: params.selectionText,
+            mediaType: params.mediaType,
+            srcUrl: params.srcURL
+        });
     });
     
     return view;
@@ -121,10 +168,15 @@ ipcMain.handle('remove-view', async (e, id) => { removeView(id); return true; })
 ipcMain.handle('set-active-view', async (e, id) => { setActiveView(id); return true; });
 ipcMain.handle('hide-all-views', async () => { hideAllViews(); return true; });
 ipcMain.handle('navigate-view', async (e, id, url) => { if (views[id]) views[id].webContents.loadURL(url); return true; });
+ipcMain.handle('go-back-view', async (e, id) => { if (views[id] && views[id].webContents.canGoBack()) views[id].webContents.goBack(); return true; });
+ipcMain.handle('go-forward-view', async (e, id) => { if (views[id] && views[id].webContents.canGoForward()) views[id].webContents.goForward(); return true; });
+ipcMain.handle('reload-view', async (e, id) => { if (views[id]) views[id].webContents.reload(); return true; });
 ipcMain.handle('update-view-bounds', async (e, id) => { updateViewBounds(id); return true; });
+ipcMain.handle('open-external', async (e, url) => { require('electron').shell.openExternal(url); return true; });
 
-ipcMain.on('set-proxy', (e, proxy) => { if (proxy) session.defaultSession.setProxy({ proxyRules: proxy }).catch(() => {}); else session.defaultSession.setProxy({ proxyRules: 'direct://' }).catch(() => {}); });
-ipcMain.on('open-external', (e, url) => { require('electron').shell.openExternal(url); });
+// Secure password encryption/decryption
+ipcMain.handle('encrypt-password', async (e, password) => { return encrypt(password); });
+ipcMain.handle('decrypt-password', async (e, encryptedPassword) => { return decrypt(encryptedPassword); });
 
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
