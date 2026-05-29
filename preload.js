@@ -13,8 +13,17 @@ contextBridge.exposeInMainWorld('daybreakAPI', {
     openExternal: (url) => ipcRenderer.invoke('open-external', url),
     encryptPassword: (password) => ipcRenderer.invoke('encrypt-password', password),
     decryptPassword: (encryptedPassword) => ipcRenderer.invoke('decrypt-password', encryptedPassword),
+    toggleAdblocker: (enable) => ipcRenderer.invoke('toggle-adblocker', enable),
+    getAdblockerStatus: () => ipcRenderer.invoke('get-adblocker-status'),
+    fillCredentialsInView: (viewId, credentials) => ipcRenderer.invoke('fill-credentials-in-view', viewId, credentials),
+    menuOpened: () => ipcRenderer.invoke('menu-opened'),
+    menuClosed: () => ipcRenderer.invoke('menu-closed'),
+    setLanguage: (lang) => ipcRenderer.invoke('set-language', lang),
     onPageLoaded: (callback) => ipcRenderer.on('page-loaded', (event, data) => callback(data)),
     onPageNavigated: (callback) => ipcRenderer.on('page-navigated', (event, data) => callback(data)),
     onOpenNewTab: (callback) => ipcRenderer.on('open-new-tab', (event, url) => callback(url)),
-    onShowPageContextMenu: (callback) => ipcRenderer.on('show-page-context-menu', (event, data) => callback(data))
+    onShowPasswordSaveBar: (callback) => ipcRenderer.on('show-password-save-bar', (event, data) => callback(data)),
+    onPasswordAutofillCheck: (callback) => ipcRenderer.on('password-autofill-check', (event, data) => callback(data)),
+    onPasswordNeverSaveDomain: (callback) => ipcRenderer.on('password-never-save-domain', (event, data) => callback(data)),
+    onSearchSelectedText: (callback) => ipcRenderer.on('search-selected-text', (event, text) => callback(text))
 });

@@ -147,7 +147,7 @@ function updateViewBounds(id) {
         mainWindow.webContents.executeJavaScript(`(function(){try{return{tabsH:document.getElementById('tabsBar')?.offsetHeight||34,topbarH:document.getElementById('topbar')?.offsetHeight||42,statusH:document.getElementById('statusBar')?.offsetHeight||2,winW:window.innerWidth,winH:window.innerHeight};}catch(e){return{tabsH:34,topbarH:42,statusH:2,winW:window.innerWidth,winH:window.innerHeight};}})()`).then(dims=>{
             if(dims&&views[id]&&activeViewId===id){
                 const y=dims.tabsH+dims.topbarH+dims.statusH;
-                views[id].setBounds({x:0,y:Math.round(y),width:Math.round(dims.winW-(menuOpen?230:0)),height:Math.round(dims.winH-y)});
+                views[id].setBounds({x:0,y:Math.round(y),width:Math.round(dims.winW),height:Math.round(dims.winH-y)});
             }
         }).catch(()=>{});
     }catch(e){}
@@ -167,10 +167,8 @@ ipcMain.handle('encrypt-password',async(e,password)=>{return encrypt(password);}
 ipcMain.handle('decrypt-password',async(e,encryptedPassword)=>{return decrypt(encryptedPassword);});
 ipcMain.handle('toggle-adblocker',async(e,enable)=>{if(enable){await enableAdBlocker(session.defaultSession);}else{disableAdBlocker();}return enable;});
 ipcMain.handle('get-adblocker-status',async()=>{return!!blocker;});
-ipcMain.handle('menu-opened',async()=>{menuOpen=true;if(activeViewId&&views[activeViewId])updateViewBounds(activeViewId);return true;});
-ipcMain.handle('menu-closed',async()=>{menuOpen=false;if(activeViewId&&views[activeViewId])updateViewBounds(activeViewId);return true;});
-ipcMain.handle('hide-active-view-for-menu',async()=>{if(activeViewId&&views[activeViewId]){views[activeViewId].setBounds({x:0,y:0,width:0,height:0});}return true;});
-ipcMain.handle('restore-active-view',async()=>{if(activeViewId&&views[activeViewId]){updateViewBounds(activeViewId);}return true;});
+ipcMain.handle('menu-opened',async()=>{return true;});
+ipcMain.handle('menu-closed',async()=>{return true;});
 ipcMain.handle('set-language',async(e,lang)=>{currentLang=lang;return true;});
 
 app.whenReady().then(createWindow);
