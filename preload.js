@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('daybreakAPI', {
     fillCredentialsInView: (viewId, credentials) => ipcRenderer.invoke('fill-credentials-in-view', viewId, credentials),
     menuOpened: () => ipcRenderer.invoke('menu-opened'),
     menuClosed: () => ipcRenderer.invoke('menu-closed'),
+    ctxMenuOpened: () => ipcRenderer.invoke('ctx-menu-opened'),
+    ctxMenuClosed: () => ipcRenderer.invoke('ctx-menu-closed'),
     setLanguage: (lang) => ipcRenderer.invoke('set-language', lang),
     onPageLoaded: (callback) => ipcRenderer.on('page-loaded', (event, data) => callback(data)),
     onPageNavigated: (callback) => ipcRenderer.on('page-navigated', (event, data) => callback(data)),
